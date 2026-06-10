@@ -81,28 +81,69 @@ export async function create({ condition, price, message }) {
   `);
 
   // 3. Message is optional — TV auto-fills a sensible default. Best-effort override;
-  //    never block submit on it.
+  //    never block submit on it. The message lives in a COLLAPSED section rendered
+  //    as a button (`[class*="textButtonSection"]`); the <textarea> only mounts after
+  //    that button is clicked — which is why a plain querySelector('textarea') found
+  //    nothing. So expand the section first, then type into the textarea with real
+  //    CDP keystrokes (same reason as the price: a native setter doesn't stick).
+  //    Done AFTER the price so expanding it can't reflow the price field mid-edit.
   let messageSet = false;
   if (message) {
-    messageSet = await evaluate(`
+    // The dialog has several identical-class textButtonSections (trigger, expiry,
+    // message, notification) and they share hashed classes, so neither position nor
+    // class nor the localized "메시지"/"Message" label is a reliable anchor. The one
+    // stable, locale- and version-independent signal: TV pre-fills the message as
+    // "<symbol> <condition> <price>", so the message section is the one whose button
+    // text embeds the price we just set. Match on digit-stripped text.
+    const expanded = await evaluate(`
       (function() {
         var dlg = ${DIALOG_FROM_SUBMIT}();
         if (!dlg) return false;
-        var el = dlg.querySelector('textarea')
-          || dlg.querySelector('[contenteditable="true"]');
-        if (!el) return false;
-        if (el.tagName === 'TEXTAREA') {
-          var setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-          setter.call(el, ${JSON.stringify(message)});
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        } else {
-          el.textContent = ${JSON.stringify(message)};
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        return true;
+        if (dlg.querySelector('textarea')) return true;  // already open
+        var want = String(${price}).replace(/[^0-9]/g, '');
+        var sections = Array.prototype.slice.call(dlg.querySelectorAll('[class*="textButtonSection"]'));
+        var section = sections.find(function(s) {
+          var b = s.querySelector('button');
+          return b && (b.textContent || '').replace(/[^0-9]/g, '').indexOf(want) !== -1;
+        });
+        var btn = section ? section.querySelector('button') : null;
+        if (btn) { btn.click(); return true; }
+        return false;
       })()
     `);
+    if (expanded) {
+      // The <textarea> mounts asynchronously after the section expands — poll for it.
+      let focused = false;
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 120));
+        focused = await evaluate(`
+          (function() {
+            var dlg = ${DIALOG_FROM_SUBMIT}();
+            if (!dlg) return false;
+            var ta = dlg.querySelector('textarea');
+            if (!ta) return false;
+            ta.focus();
+            ta.select();
+            return document.activeElement === ta;
+          })()
+        `);
+        if (focused) break;
+      }
+      if (focused) {
+        await client.Input.insertText({ text: String(message) });
+        await client.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+        await client.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+        await new Promise(r => setTimeout(r, 150));
+        messageSet = await evaluate(`
+          (function() {
+            var dlg = ${DIALOG_FROM_SUBMIT}();
+            if (!dlg) return false;
+            var ta = dlg.querySelector('textarea');
+            return !!ta && ta.value === ${JSON.stringify(message)};
+          })()
+        `);
+      }
+    }
   }
 
   // 4. Submit via the stable submit button (text is localized — don't match on it).
