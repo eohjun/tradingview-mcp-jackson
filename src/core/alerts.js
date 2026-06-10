@@ -80,94 +80,14 @@ export async function create({ condition, price, message }) {
     })()
   `);
 
-  // 3. Message is optional — TV auto-fills a sensible default. Best-effort override;
-  //    never block submit on it. The message lives in a COLLAPSED section rendered
-  //    as a button (`[class*="textButtonSection"]`); the <textarea> only mounts after
-  //    that button is clicked — which is why a plain querySelector('textarea') found
-  //    nothing. So expand the section first, then type into the textarea with real
-  //    CDP keystrokes (same reason as the price: a native setter doesn't stick).
-  //    Done AFTER the price so expanding it can't reflow the price field mid-edit.
-  let messageSet = false;
-  if (message) {
-    // The dialog has several identical-class textButtonSections (trigger, expiry,
-    // message, notification); class, position, and the localized "메시지"/"Message"
-    // label are all unreliable anchors, and matching on the price races with TV's
-    // async update of the auto-message. The one structural invariant: only the
-    // message section mounts a <textarea> when expanded — the others open a
-    // dropdown/calendar in the overlay layer. So click each section's button in turn
-    // and keep the one that makes a textarea appear; Escape closes a wrong popup
-    // without committing any change.
-    const expanded = await evaluate(`
-      (function() {
-        var dlg = ${DIALOG_FROM_SUBMIT}();
-        if (!dlg) return false;
-        if (dlg.querySelector('textarea')) return true;  // already open
-        return 'try';
-      })()
-    `);
-    if (expanded === 'try') {
-      const sectionCount = await evaluate(`
-        (function() {
-          var dlg = ${DIALOG_FROM_SUBMIT}();
-          return dlg ? dlg.querySelectorAll('[class*="textButtonSection"]').length : 0;
-        })()
-      `);
-      for (let s = 0; s < sectionCount; s++) {
-        const clicked = await evaluate(`
-          (function() {
-            var dlg = ${DIALOG_FROM_SUBMIT}();
-            if (!dlg) return false;
-            var secs = dlg.querySelectorAll('[class*="textButtonSection"]');
-            var btn = secs[${s}] && secs[${s}].querySelector('button');
-            if (!btn) return false;
-            btn.click();
-            return true;
-          })()
-        `);
-        if (!clicked) continue;
-        await new Promise(r => setTimeout(r, 200));
-        const gotTextarea = await evaluate(`!!${DIALOG_FROM_SUBMIT}() && !!${DIALOG_FROM_SUBMIT}().querySelector('textarea')`);
-        if (gotTextarea) break;
-        // wrong section (opened a dropdown/calendar) — close it and try the next
-        await client.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-        await client.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-        await new Promise(r => setTimeout(r, 120));
-      }
-    }
-    if (expanded) {
-      // The <textarea> mounts asynchronously after the section expands — poll for it.
-      let focused = false;
-      for (let i = 0; i < 12; i++) {
-        await new Promise(r => setTimeout(r, 120));
-        focused = await evaluate(`
-          (function() {
-            var dlg = ${DIALOG_FROM_SUBMIT}();
-            if (!dlg) return false;
-            var ta = dlg.querySelector('textarea');
-            if (!ta) return false;
-            ta.focus();
-            ta.select();
-            return document.activeElement === ta;
-          })()
-        `);
-        if (focused) break;
-      }
-      if (focused) {
-        await client.Input.insertText({ text: String(message) });
-        await client.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
-        await client.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
-        await new Promise(r => setTimeout(r, 150));
-        messageSet = await evaluate(`
-          (function() {
-            var dlg = ${DIALOG_FROM_SUBMIT}();
-            if (!dlg) return false;
-            var ta = dlg.querySelector('textarea');
-            return !!ta && ta.value === ${JSON.stringify(message)};
-          })()
-        `);
-      }
-    }
-  }
+  // 3. Custom message: intentionally NOT set. TV renders the message field as a
+  //    collapsed section; expanding it to type a custom message reflows the dialog
+  //    and CLEARS the committed price, so the alert then submits with an empty price
+  //    and is silently dropped server-side. Until that reflow is solved (e.g. set the
+  //    message BEFORE the price, or re-commit the price after expanding), we leave the
+  //    message alone — TV auto-fills a sensible "<symbol> <condition> <price>" default,
+  //    which is reliable. `message` is still accepted for API compatibility.
+  const messageSet = false;
 
   // 4. Submit via the stable submit button (text is localized — don't match on it).
   await new Promise(r => setTimeout(r, 400));
