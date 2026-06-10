@@ -90,27 +90,50 @@ export async function create({ condition, price, message }) {
   let messageSet = false;
   if (message) {
     // The dialog has several identical-class textButtonSections (trigger, expiry,
-    // message, notification) and they share hashed classes, so neither position nor
-    // class nor the localized "메시지"/"Message" label is a reliable anchor. The one
-    // stable, locale- and version-independent signal: TV pre-fills the message as
-    // "<symbol> <condition> <price>", so the message section is the one whose button
-    // text embeds the price we just set. Match on digit-stripped text.
+    // message, notification); class, position, and the localized "메시지"/"Message"
+    // label are all unreliable anchors, and matching on the price races with TV's
+    // async update of the auto-message. The one structural invariant: only the
+    // message section mounts a <textarea> when expanded — the others open a
+    // dropdown/calendar in the overlay layer. So click each section's button in turn
+    // and keep the one that makes a textarea appear; Escape closes a wrong popup
+    // without committing any change.
     const expanded = await evaluate(`
       (function() {
         var dlg = ${DIALOG_FROM_SUBMIT}();
         if (!dlg) return false;
         if (dlg.querySelector('textarea')) return true;  // already open
-        var want = String(${price}).replace(/[^0-9]/g, '');
-        var sections = Array.prototype.slice.call(dlg.querySelectorAll('[class*="textButtonSection"]'));
-        var section = sections.find(function(s) {
-          var b = s.querySelector('button');
-          return b && (b.textContent || '').replace(/[^0-9]/g, '').indexOf(want) !== -1;
-        });
-        var btn = section ? section.querySelector('button') : null;
-        if (btn) { btn.click(); return true; }
-        return false;
+        return 'try';
       })()
     `);
+    if (expanded === 'try') {
+      const sectionCount = await evaluate(`
+        (function() {
+          var dlg = ${DIALOG_FROM_SUBMIT}();
+          return dlg ? dlg.querySelectorAll('[class*="textButtonSection"]').length : 0;
+        })()
+      `);
+      for (let s = 0; s < sectionCount; s++) {
+        const clicked = await evaluate(`
+          (function() {
+            var dlg = ${DIALOG_FROM_SUBMIT}();
+            if (!dlg) return false;
+            var secs = dlg.querySelectorAll('[class*="textButtonSection"]');
+            var btn = secs[${s}] && secs[${s}].querySelector('button');
+            if (!btn) return false;
+            btn.click();
+            return true;
+          })()
+        `);
+        if (!clicked) continue;
+        await new Promise(r => setTimeout(r, 200));
+        const gotTextarea = await evaluate(`!!${DIALOG_FROM_SUBMIT}() && !!${DIALOG_FROM_SUBMIT}().querySelector('textarea')`);
+        if (gotTextarea) break;
+        // wrong section (opened a dropdown/calendar) — close it and try the next
+        await client.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+        await client.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+        await new Promise(r => setTimeout(r, 120));
+      }
+    }
     if (expanded) {
       // The <textarea> mounts asynchronously after the section expands — poll for it.
       let focused = false;
