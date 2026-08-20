@@ -1,8 +1,8 @@
 # TradingView MCP Jackson
 
-If you found this from the YouTube video — welcome. This is the improved fork. Everything you need is below.
+Personal AI assistant for your TradingView Desktop charts. Connects Claude Code to your locally running TradingView app via Chrome DevTools Protocol for AI-assisted chart analysis, Pine Script development, and workflow automation.
 
-Built on top of the original [tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp) by [@tradesdontlie](https://github.com/tradesdontlie). Full credit to them for the foundation. This fork adds a morning brief workflow, a rules config, and fixes the launch bug on TradingView Desktop v2.14+.
+This clone tracks [tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp) by [@tradesdontlie](https://github.com/tradesdontlie) and keeps the morning-brief workflow (`morning_brief`, `session_save`, `session_get`) plus `rules.json`, which exist only in the [jackson fork](https://github.com/LewisWJackson/tradingview-mcp-jackson).
 
 > [!WARNING]
 > **Not affiliated with TradingView Inc. or Anthropic.** This tool connects to your locally running TradingView Desktop app via Chrome DevTools Protocol. Review the [Disclaimer](#disclaimer) before use.
@@ -307,8 +307,7 @@ Full command list: `tv --help`
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **78 original tools** + **3 morning brief tools** = 81 MCP tools total
-- **Transport**: MCP over stdio + CLI (`tv` command)
+- **Transport**: MCP over stdio (87 tools = 84 upstream + 3 morning brief) + CLI (`tv` command)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
 - **No external network calls** — everything runs locally
 - **Zero extra dependencies** beyond the original
@@ -325,7 +324,7 @@ This fork is built on [tradingview-mcp](https://github.com/tradesdontlie/trading
 
 This project is provided **for personal, educational, and research purposes only**.
 
-This tool uses the Chrome DevTools Protocol (CDP), a standard debugging interface built into all Chromium-based applications. It does not reverse engineer any proprietary TradingView protocol, connect to TradingView's servers, or bypass any access controls. The debug port must be explicitly enabled by the user via a standard Chromium command-line flag.
+**How this tool works:** This tool uses Chrome DevTools Protocol (CDP), the standard debugging interface built into Chromium-based applications. It does not reverse engineer any proprietary TradingView protocol, connect to TradingView's servers, or bypass any access controls. The debug port must be explicitly enabled by the user via a standard Chromium command-line flag (`--remote-debugging-port=9222`).
 
 By using this software you agree that:
 

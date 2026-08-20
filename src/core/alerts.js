@@ -1,114 +1,66 @@
 /**
  * Core alert logic.
+ *
+ * Alerts are created / listed / deleted through TradingView's pricealerts REST API
+ * (https://pricealerts.tradingview.com) using the desktop app's authenticated session.
+ * Requests are sent as text/plain so the browser does not issue a CORS preflight that
+ * the endpoint rejects. The create/delete bodies must be wrapped in a `payload` object.
  */
-import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { evaluate, evaluateAsync, safeString, requireFinite } from '../connection.js';
 
-// The TV Desktop alert dialog carries no stable data-name or "alert" class — its
-// container is `dialog-<hash>` and the locale changes every button's text (Korean:
-// 얼러트 만들기 / 생성). The one stable anchor across versions/locales is the submit
-// button (`button[type="submit"][class*="submitBtn"]`); we locate the dialog as its
-// nearest dialog ancestor and scope every field query to that, so nothing depends on
-// the unstable hash or on English labels.
-const DIALOG_FROM_SUBMIT = `
-  (function() {
-    var sub = document.querySelector('button[type="submit"][class*="submitBtn"]');
-    return sub ? sub.closest('[class*="dialog"]') : null;
-  })`;
+// Map the tool's friendly condition names to TradingView's alert condition types.
+const CONDITION_TYPE_MAP = {
+  crossing: 'cross', cross: 'cross',
+  greater_than: 'greater', greater: 'greater', above: 'greater', '>': 'greater',
+  less_than: 'less', less: 'less', below: 'less', '<': 'less',
+};
 
 export async function create({ condition, price, message }) {
-  // 1. Open the alert dialog. Header button id is stable; aria-label is localized
-  //    (Korean "얼러트 만들기"), so match it loosely. Alt+A stays as last resort.
-  const opened = await evaluate(`
+  const p = requireFinite(price, 'price');
+  const condType = CONDITION_TYPE_MAP[String(condition || 'crossing').trim().toLowerCase()] || 'cross';
+
+  return evaluate(`
     (function() {
-      var btn = document.getElementById('header-toolbar-alerts')
-        || document.querySelector('[aria-label*="얼러트"], [aria-label*="Alert"], [aria-label*="alert"]');
-      if (btn) { btn.click(); return true; }
-      return false;
+      try {
+        var ms = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget.model().mainSeries();
+        var sym = (ms.proSymbol && ms.proSymbol()) || (ms.symbol && ms.symbol());
+        if (!sym) return { success: false, error: 'Could not read current chart symbol from TradingView' };
+        var price = ${JSON.stringify(p)};
+        var condType = ${safeString(condType)};
+        var msg = ${safeString(message || '')};
+        if (!msg) {
+          var verb = condType === 'greater' ? 'above' : (condType === 'less' ? 'below' : 'crossing');
+          msg = sym.split(':').pop() + ' ' + verb + ' ' + price;
+        }
+        var cond = { type: condType, frequency: 'on_first_fire', series: [{ type: 'barset' }, { type: 'value', value: price }], resolution: '1' };
+        var payload = {
+          conditions: [cond],
+          symbol: '={"symbol":"' + sym + '"}',
+          resolution: '1',
+          message: msg,
+          sound_file: 'alert/fired', sound_duration: 0,
+          popup: true, auto_deactivate: true,
+          email: false, sms_over_email: false, mobile_push: true,
+          web_hook: null, name: null,
+          expiration: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+          active: true, ignore_warnings: true
+        };
+        var x = new XMLHttpRequest();
+        x.open('POST', 'https://pricealerts.tradingview.com/create_alert', false);
+        x.withCredentials = true;
+        x.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
+        x.send(JSON.stringify({ payload: payload }));
+        var data = {};
+        try { data = JSON.parse(x.responseText); } catch (e) {}
+        if (data.s === 'ok') {
+          return { success: true, source: 'internal_api', symbol: sym, price: price, condition: condType, message: msg, alert_id: (data.r && data.r.alert_id) || null };
+        }
+        return { success: false, source: 'internal_api', error: (data.err && data.err.code) || data.errmsg || ('HTTP ' + x.status), response: (x.responseText || '').slice(0, 200) };
+      } catch (e) {
+        return { success: false, source: 'internal_api', error: e.message };
+      }
     })()
   `);
-
-  if (!opened) {
-    const client = await getClient();
-    await client.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: 1, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 });
-    await client.Input.dispatchKeyEvent({ type: 'keyUp', key: 'a', code: 'KeyA' });
-  }
-
-  // Poll for the dialog instead of a fixed sleep — it can take a beat to mount.
-  let dialogReady = false;
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 150));
-    dialogReady = await evaluate(`!!${DIALOG_FROM_SUBMIT}()`);
-    if (dialogReady) break;
-  }
-  if (!dialogReady) {
-    return { success: false, price, condition, message: message || '(none)', price_set: false, error: 'alert dialog did not open', source: 'dom' };
-  }
-
-  // 2. Set the price. The value field is the dialog's text input (TV pre-fills it
-  //    with the current price). It is a controlled numeric widget: a native value
-  //    setter updates the DOM but NOT TV's model (the alert submits with the stale
-  //    pre-filled price — verified against list_alerts). The model only commits on
-  //    real keystrokes followed by a blur. So focus+select the field, type the
-  //    digits through CDP (real key events), then Tab to commit before submitting.
-  const client = await getClient();
-  const focused = await evaluate(`
-    (function() {
-      var dlg = ${DIALOG_FROM_SUBMIT}();
-      if (!dlg) return false;
-      var input = dlg.querySelector('input[type="text"]');
-      if (!input) return false;
-      input.focus();
-      input.select();
-      return document.activeElement === input;
-    })()
-  `);
-  if (focused) {
-    await client.Input.insertText({ text: String(price) });
-    await client.Input.dispatchKeyEvent({ type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
-    await client.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
-    await new Promise(r => setTimeout(r, 200));
-  }
-  // Verify against the committed value (the input reformats to the model value after
-  // the blur), not the raw DOM write that the old code trusted.
-  const priceSet = await evaluate(`
-    (function() {
-      var dlg = ${DIALOG_FROM_SUBMIT}();
-      if (!dlg) return false;
-      var input = dlg.querySelector('input[type="text"]');
-      if (!input) return false;
-      return String(input.value).replace(/[^0-9.]/g, '') === String(${price}).replace(/[^0-9.]/g, '');
-    })()
-  `);
-
-  // 3. Custom message: intentionally NOT set. TV renders the message field as a
-  //    collapsed section; expanding it to type a custom message reflows the dialog
-  //    and CLEARS the committed price, so the alert then submits with an empty price
-  //    and is silently dropped server-side. Until that reflow is solved (e.g. set the
-  //    message BEFORE the price, or re-commit the price after expanding), we leave the
-  //    message alone — TV auto-fills a sensible "<symbol> <condition> <price>" default,
-  //    which is reliable. `message` is still accepted for API compatibility.
-  const messageSet = false;
-
-  // 4. Submit via the stable submit button (text is localized — don't match on it).
-  await new Promise(r => setTimeout(r, 400));
-  const created = await evaluate(`
-    (function() {
-      var btn = document.querySelector('button[type="submit"][class*="submitBtn"]');
-      if (btn && !btn.disabled) { btn.click(); return true; }
-      return false;
-    })()
-  `);
-
-  return {
-    success: !!created && !!priceSet,
-    price,
-    condition,
-    message: message || '(none)',
-    price_set: !!priceSet,
-    message_set: !!messageSet,
-    submitted: !!created,
-    source: 'dom',
-  };
 }
 
 export async function list() {
@@ -142,21 +94,35 @@ export async function list() {
   return { success: true, alert_count: result?.alerts?.length || 0, source: 'internal_api', alerts: result?.alerts || [], error: result?.error };
 }
 
-export async function deleteAlerts({ delete_all }) {
+export async function deleteAlerts({ delete_all, alert_ids, alert_id } = {}) {
+  // Resolve the set of alert ids to delete.
+  let ids = [];
+  if (Array.isArray(alert_ids)) ids = ids.concat(alert_ids);
+  if (alert_id != null) ids.push(alert_id);
   if (delete_all) {
-    const result = await evaluate(`
-      (function() {
-        var alertBtn = document.querySelector('[data-name="alerts"]');
-        if (alertBtn) alertBtn.click();
-        var header = document.querySelector('[data-name="alerts"]');
-        if (header) {
-          header.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 100 }));
-          return { context_menu_opened: true };
-        }
-        return { context_menu_opened: false };
-      })()
-    `);
-    return { success: true, note: 'Alert deletion requires manual confirmation in the context menu.', context_menu_opened: result?.context_menu_opened || false, source: 'dom_fallback' };
+    const listed = await list();
+    ids = (listed.alerts || []).map((a) => a.alert_id);
   }
-  throw new Error('Individual alert deletion not yet supported. Use delete_all: true.');
+  ids = ids.filter((x) => x != null);
+  if (!ids.length) {
+    return { success: false, source: 'internal_api', error: delete_all ? 'No alerts to delete.' : 'Provide delete_all: true or an alert_id to delete.' };
+  }
+
+  const result = await evaluate(`
+    (function() {
+      try {
+        var x = new XMLHttpRequest();
+        x.open('POST', 'https://pricealerts.tradingview.com/delete_alerts', false);
+        x.withCredentials = true;
+        x.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
+        x.send(JSON.stringify({ payload: { alert_ids: ${JSON.stringify(ids)} } }));
+        var data = {}; try { data = JSON.parse(x.responseText); } catch (e) {}
+        return { ok: data.s === 'ok', status: x.status, response: (x.responseText || '').slice(0, 200) };
+      } catch (e) { return { ok: false, error: e.message }; }
+    })()
+  `);
+  if (result && result.ok) {
+    return { success: true, source: 'internal_api', deleted_count: ids.length, alert_ids: ids };
+  }
+  return { success: false, source: 'internal_api', alert_ids: ids, error: (result && (result.error || result.response)) || 'delete failed' };
 }
