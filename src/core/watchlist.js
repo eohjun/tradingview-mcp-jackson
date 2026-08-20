@@ -7,10 +7,12 @@
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
 
-// TV renamed the right-rail button: current builds use data-name="base" with
-// aria-label "Watchlist, details, and news"; older builds used
-// data-name="base-watchlist-widget-button" / aria-label "Watchlist".
-const WL_BUTTON_JS = `(document.querySelector('[data-name="base-watchlist-widget-button"]')
+// Locate the right-rail button by data-name, not aria-label: the label is
+// translated (ko: "왓치리스트, 상세 정보 및 뉴스"), so an English-only selector
+// finds nothing on a non-English TradingView. Current builds nest
+// data-name="base" under the right toolbar; the rest are older-build fallbacks.
+const WL_BUTTON_JS = `(document.querySelector('[data-name="right-toolbar"] [data-name="base"]')
+  || document.querySelector('[data-name="base-watchlist-widget-button"]')
   || document.querySelector('[aria-label="Watchlist, details, and news"]')
   || document.querySelector('[aria-label^="Watchlist"]'))`;
 
