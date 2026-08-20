@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCREENSHOT_DIR = join(dirname(dirname(__dirname)), "screenshots");
 
-function sanitiseFilename(name) {
+export function sanitiseFilename(name) {
   // Strip path separators, parent-dir refs, and any control chars.
   // Allow only [A-Za-z0-9._-]; collapse everything else to '_'.
   const cleaned = String(name).replace(/[^A-Za-z0-9._-]/g, "_");

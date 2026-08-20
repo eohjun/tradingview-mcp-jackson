@@ -318,9 +318,24 @@ describe('source audit — no unsafe interpolation patterns', () => {
 // ── Path traversal prevention ────────────────────────────────────────────
 
 describe('path traversal prevention', () => {
-  it('capture.js strips path separators from filename', () => {
-    const source = readFileSync(new URL('../src/core/capture.js', import.meta.url), 'utf8');
-    assert.ok(source.includes(".replace(/[\\/\\\\]/g, '_')"));
+  it('capture.js sanitiseFilename() keeps the write inside the target dir', async () => {
+    const { sanitiseFilename } = await import('../src/core/capture.js');
+    const { resolve, dirname } = await import('path');
+    const base = '/tmp/tv-screenshot-base';
+    // The property that matters is containment, not the absence of any one
+    // token: a sanitised name must either be rejected outright or resolve to a
+    // file sitting directly in the target directory.
+    for (const evil of ['../../etc/passwd', '..\\..\\windows\\system32', 'a/b', 'a\\b', '..', '', '.hidden', '/abs/path']) {
+      let out;
+      try {
+        out = sanitiseFilename(evil);
+      } catch (err) {
+        assert.match(err.message, /Invalid filename/);
+        continue;
+      }
+      assert.equal(dirname(resolve(base, `${out}.png`)), base, `escaped for input ${JSON.stringify(evil)} -> ${out}`);
+    }
+    assert.equal(sanitiseFilename('chart_2026-08-20.v1'), 'chart_2026-08-20.v1');
   });
 
   it('batch.js strips path separators from filename', () => {
