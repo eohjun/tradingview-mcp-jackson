@@ -5,6 +5,12 @@ import { getClient, getTargetInfo, evaluate, CDP_HOST, CDP_PORT } from '../conne
 import { existsSync, cpSync, rmSync, readdirSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 import { dirname, basename, join } from 'path';
+import { fileURLToPath } from 'url';
+
+// src/core/health.js -> repo root. Every git call below must be pinned to it:
+// the MCP server is registered user-scoped and starts in whatever project the
+// client happens to be in, so an unpinned `git` reads that project's repo.
+const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 // Best-effort git-pull update check: compare local HEAD to origin's default
 // branch on GitHub. Never throws — returns null on any failure (offline,
@@ -14,8 +20,9 @@ async function checkForUpdate() {
   if (_updateCache && (Date.now() - _updateCache.at) < 3600_000) return _updateCache.value;
   let value = null;
   try {
-    const localSha = execSync('git rev-parse HEAD', { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-    const remoteUrl = execSync('git config --get remote.origin.url', { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const gitOpts = { cwd: REPO_ROOT, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] };
+    const localSha = execSync('git rev-parse HEAD', gitOpts).toString().trim();
+    const remoteUrl = execSync('git config --get remote.origin.url', gitOpts).toString().trim();
     const m = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
     if (localSha && m) {
       const repo = m[1];
@@ -28,12 +35,22 @@ async function checkForUpdate() {
         req.on('error', () => resolve(null));
         req.setTimeout(3000, () => { req.destroy(); resolve(null); });
       });
-      if (remoteSha) {
+      if (remoteSha && /^[0-9a-f]{40}$/.test(remoteSha)) {
+        // Ancestry, not inequality. A clone carrying any local commit can never
+        // have HEAD equal the remote's, so `!==` claims an update forever. If the
+        // remote head is an ancestor of HEAD we already contain it; a sha we have
+        // never fetched is genuinely new. The regex above is what makes it safe to
+        // put remoteSha — a value read off the network — into a shell command.
+        let hasUpdate = true;
+        try {
+          execSync(`git merge-base --is-ancestor ${remoteSha} HEAD`, { cwd: REPO_ROOT, timeout: 3000, stdio: 'ignore' });
+          hasUpdate = false;
+        } catch { /* not an ancestor, or the object was never fetched here */ }
         value = {
-          update_available: remoteSha !== localSha,
+          update_available: hasUpdate,
           local_commit: localSha.slice(0, 8),
           latest_commit: remoteSha.slice(0, 8),
-          ...(remoteSha !== localSha && { hint: 'Run the tv_update tool (or `tv update` CLI) to update, then restart the MCP server.' }),
+          ...(hasUpdate && { hint: 'Run the tv_update tool (or `tv update` CLI) to update, then restart the MCP server.' }),
         };
       }
     }
