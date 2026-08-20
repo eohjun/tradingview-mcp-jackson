@@ -1,6 +1,8 @@
 # TradingView MCP — Claude Instructions
 
-84 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+87 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+84 are upstream's; `morning_brief`, `session_save` and `session_get` came from the
+LewisWJackson fork and exist only in this clone — upstream has no equivalent.
 
 ## Decision Tree — Which Tool When
 
